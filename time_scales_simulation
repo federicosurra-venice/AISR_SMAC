@@ -2,6 +2,30 @@ import numpy as np
 import matplotlib.pyplot as plt
 from scipy.integrate import solve_ivp
 
+# =============================================================================
+# AISR simulator — Surra, Gonella, Conte, Romano
+# This script implements the system of coupled ODEs given as Eq. 2 in the
+# manuscript. Internal variable names are kept from the original implementation;
+# the mapping to the manuscript notation is:
+#
+#   code   manuscript   meaning
+#   ----   ----------   -----------------------------------------------
+#   Q2  ->   Q1         antigen presented by specific T-cells      [cells]
+#   Q3  ->   Q2         antigen presented by specific dendritic c. [cells]
+#   Q4  ->   Q3         antigen-specific B-cells, incl. B-memory   [cells]
+#   Q5  ->   Q4         plasmablasts / short-lived plasma cells    [cells]
+#   Q6  ->   Q5         long-lived plasma cells                    [cells]
+#   Q7  ->   Q6         antigen-specific immunoglobulins           [g]
+#   Q13 ->   Q7         free space in the bone-marrow niche        [slots]
+#
+#   k6  -> k1     k9  -> k1A    k7  -> k2     k11 -> k2A
+#   k12 -> k3     k13 -> kB     k14 -> k4     k15 -> k3A
+#   k16 -> k8     k17 -> k9     k18 -> k4A    k19 -> k5
+#   k22 -> k6     k23 -> k5A    k25 -> k6D
+#
+# 
+# =============================================================================
+
 # --- fonts in figure ---
 plt.rcParams.update({
     "font.size": 24,          # base
@@ -22,16 +46,24 @@ def Adaptive_Immune_System_Response(t, z, A, D, T, E, B,
         k6 * A * T - k9 * Q2,
         k7 * A * D - k11 * Q3,
         k12 * E * Q4 + k13 * Q2 * B - k14 * Q4 * Q3 - k15 * Q4,
-        k14 * Q4 * Q3 - k16 * Q5 - k17 * Q5 * Q13 - k18 * Q5,
-        k19 * Q5 * Q13 - k22 * Q6 - k23 * Q6,
-        k16 * Q5 + k22 * Q6 - k25 * Q7
+        k14 * Q4 * Q3 - k17 * Q5 * Q13 - k18 * Q5,
+        k19 * Q5 * Q13 - k23 * Q6,
+        k16 * E * Q5 + k22 * E * Q6 - k25 * Q7
     ]
+# Immunoglobulin synthesis (last equation) is a dissipative production process
+# fed by the resource stock E, with Q5 and Q6 acting as control flows that set
+# its rate; the secreting cells are therefore not depleted by it. This is the
+# form given in Eq. 2 of the manuscript.
 
 D, T, B, E, A = 40e6, 8.5e9, 0.4e9, 1, 2e6
 k6, k7 = 28e-9, 6e-6
 k9, k11, k12, k13, k14, k15 = 0.7, 0.9, 0.019/E, 1e-9, 2e-9, 0.4
 f13, Q13_M = 1, 1e9
-k16, k17, k18, k19, k22, k23, k25 =  3.4e-9, 4.8/Q13_M, 0.33, 4.8/Q13_M, 3.4e-9, 2.7e-5, 0.07 #/Q13_M
+k16, k17, k18, k19, k22, k23, k25 =  3.4e-9, 4.8/Q13_M, 0.33, 4.8/Q13_M, 3.4e-9, 2.7e-5, 0.07
+# NOTE ON TWO COEFFICIENTS: k9 (manuscript k1A) and k11 (manuscript k2A) are used
+# here as rounded to 0.7 and 0.9 day^-1, whereas Table 1 of the manuscript reports the
+# unrounded values 0.693 and 0.85 obtained from the corresponding literature
+# half-lives. 
 
 # --- base parameters for step simulation ---
 base_params = {
@@ -52,14 +84,24 @@ base_params = {
 durations = [10, 365, 29220]
 t_grids   = [np.linspace(0, d, nt) for d, nt in zip(durations, [100,1000,10000])]
 
-# scale factors
+# Uncertainty envelopes of Figure 5. A common factor f multiplies EVERY entry of
+# base_params — structural coefficients, source stocks, E, f13 and the niche
+# carrying capacity Q13_M alike — and the envelope is the pointwise range spanned
+# by the three resulting trajectories. Parameters are therefore 
+# correlated by construction: no probability distribution is assigned to them and
+# no sampling is performed, so the envelopes are not confidence intervals. The
+# sensitivity of individual coefficients is assessed separately by the
+# one-parameter-at-a-time analysis of Figure S1.
 factors = [0.95, 1.0, 1.05]
 
 # prepare storage: for each horizon index, collect one list per factor
 second_sims = {i: [] for i in range(len(durations))}
 
 for f in factors:
-    # --- 1-day sim to get ICs ---
+    # --- priming phase: antigen present (A = 2e6) for one day, from an empty state.
+    #     The state reached at the end of this interval is the initial condition of
+    #     the simulations reported in Figure 5, whose time origin therefore
+    #     coincides with antigen clearance. ---
     p = {k: f * v for k, v in base_params.items()}
     t1 = np.linspace(0, 1, 10)
     sol1 = solve_ivp(
@@ -67,7 +109,7 @@ for f in factors:
         [0, 1],
         [0,0,0,0,0,0],
         t_eval=t1,
-        method='Radau',
+        method='Radau', rtol=1e-3, atol=1e-6,
         args=(
             p["A"], p["D"], p["T"], p["E"], p["B"],
             p["k6"], p["k9"], p["k7"], p["k11"],
@@ -79,14 +121,14 @@ for f in factors:
     )
     Q20t, Q30t, Q40t, Q50t, Q60t, Q70t = sol1.y[:, -1]
 
-    # --- step sims from those ICs ---
+    # --- main simulations: antigen cleared (A = 0), three time horizons ---
     for i, (DT, t_eval) in enumerate(zip(durations, t_grids)):
         sol2 = solve_ivp(
             Adaptive_Immune_System_Response,
             [0, DT],
             [Q20t, Q30t, Q40t, Q50t, Q60t, Q70t],
             t_eval=t_eval,
-            method='Radau',
+            method='Radau', rtol=1e-3, atol=1e-6,
             args=(
                 0, p["D"], p["T"], p["E"], p["B"], #A = 0
                 p["k6"], p["k9"], p["k7"], p["k11"],
@@ -98,51 +140,59 @@ for f in factors:
         )
         second_sims[i].append(sol2.y)   # shape (6, len(t_eval))
 
-# --- plot mean ± envelope with twin axes for Q7 ---
-labels = ["Q1","Q2","Q3","Q4","Q5","Q6"]
-colors = ["r","orange","green","cyan","purple","blue"]
+# =============================================================================
+# ATP-equivalent conversion (see Methods, "Energetic conversions of stocks and
+# flows"). Stocks are integrated in native units and converted for plotting.
+# =============================================================================
+C_CELL = 5.0e10      # ATPeq per cell            (Conte et al., 2023)
+C_IG   = 2.19e22     # ATPeq per gram of Ig      (4 ATP per peptide bond, 110 g/mol)
 
-fig, axes = plt.subplots(1, 3, figsize=(36,12), dpi=400, sharey=False)
+# rows 0..4 = Q1..Q5 (cells) ; row 5 = Q6 (grams of immunoglobulin)
+SCALE = np.array([C_CELL] * 5 + [C_IG])[:, None]
 
-for i, ax in enumerate(axes):
-    # stack: shape (n_factors=3, n_vars=6, n_times)
-    arr   = np.stack(second_sims[i], axis=0)
-    mean  = arr.mean(axis=0)
-    lo    = arr.min(axis=0)
-    hi    = arr.max(axis=0)
+# --- Figure 5: two rows, both in ATPeq -------------------------------------
+#     top row    (A,B,C) : cell stocks Q1-Q5
+#     bottom row (D,E,F) : antibody stock Q6
+labels = ["$Q_1$", "$Q_2$", "$Q_3$", "$Q_4$", "$Q_5$", "$Q_6$"]
+colors = ["r", "orange", "green", "cyan", "purple", "blue"]
+panels = [("$A.$", "$B.$", "$C.$"), ("$D.$", "$E.$", "$F.$")]
+
+plt.rcParams.update({
+    "font.size": 20, "axes.labelsize": 24,
+    "xtick.labelsize": 20, "ytick.labelsize": 20, "legend.fontsize": 20,
+})
+
+fig, axes = plt.subplots(2, 3, figsize=(33, 16), dpi=200,
+                         gridspec_kw={"height_ratios": [1.35, 1]})
+
+for i in range(len(durations)):
+    arr  = np.stack(second_sims[i], axis=0) * SCALE[None, :, :]
+    mean = arr.mean(axis=0)
+    lo   = arr.min(axis=0)
+    hi   = arr.max(axis=0)
     t_eval = t_grids[i]
 
-    # plot Q2–Q6 on primary axis
-    main_handles = []
-    for j in range(5):  # indices 0..4 correspond to Q2..Q6
-        h, = ax.plot(t_eval, mean[j], color=colors[j], label=labels[j])
-        ax.fill_between(t_eval, lo[j], hi[j], color=colors[j], alpha=0.2)
-        main_handles.append(h)
-    ax.set_xlabel(r"$time$ $from$ $first$ $exposure$ $(days)$", size=28)
-    ax.set_ylabel(r"$Q$ $(n. cells)$", size=28)
-    ax.tick_params(labelsize=24)
-    ax.ticklabel_format(style='sci', useMathText=True)
-    ax.yaxis.offsetText.set_fontsize(24)
+    for row in (0, 1):
+        ax = axes[row, i]
+        for j in (range(5) if row == 0 else [5]):
+            ax.plot(t_eval, mean[j], color=colors[j], label=labels[j], lw=2.5)
+            ax.fill_between(t_eval, lo[j], hi[j], color=colors[j], alpha=0.2)
+        ax.set_ylabel(r"$Q_{1-5}\ (ATPeq)$" if row == 0 else r"$Q_6\ (ATPeq)$")
+        ax.ticklabel_format(style="sci", axis="y", scilimits=(0, 0), useMathText=True)
+        ax.yaxis.offsetText.set_fontsize(19)
+        ax.grid(ls=":")
+        ax.margins(x=0)
+        ax.text(0.03, 0.92, panels[row][i], transform=ax.transAxes,
+                size=30, fontweight="heavy")
+        if row == 1:
+            ax.set_xlabel(r"$time\ from\ first\ exposure\ (days)$")
+        else:
+            ax.tick_params(labelbottom=False)
 
-    # twin y‐axis for Q7 (antibodies in grams)
-    ax2 = ax.twinx()
-    h7, = ax2.plot(t_eval, mean[5], color=colors[5], label=labels[5])
-    ax2.fill_between(t_eval, lo[5], hi[5], color=colors[5], alpha=0.2)
-    ax2.set_ylabel(r"$Q_6$ $(g antibodies)$", size=28)
-    ax2.tick_params(labelsize=24)
-    
-    # combined legend
-    handles = main_handles + [h7]
-    labs    = labels[:5] + [labels[5]]
-    ax.grid(ls=":")
-
-# panels
-axes[0].text(0.5,   3.8e8, r"$A.$", size=34, fontweight="heavy")
-axes[1].text(22,    3.8e8, r"$B.$", size=34, fontweight="heavy")
-axes[2].text(3500,  3.8e8, r"$C.$", size=34, fontweight="heavy")
-
-# legenda
-axes[0].legend(handles, labs, loc='upper center', fontsize=26)
+axes[0, 0].legend(loc="upper right", ncol=2)
+axes[1, 0].legend(loc="lower right")
 
 plt.tight_layout()
+plt.subplots_adjust(hspace=0.08)
+plt.savefig("Figure5_AISR_dynamics.png", dpi=300, bbox_inches="tight")
 plt.show()
