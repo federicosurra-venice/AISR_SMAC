@@ -5,7 +5,33 @@ import matplotlib.patches as mpatches
 import os
 
 # =============================================================================
-# (1) MODEL DEFINITION 
+# One-parameter-at-a-time (OPT) sensitivity analysis — Figure S1
+# Surra, Gonella, Conte, Romano
+#
+# This script implements the system of coupled ODEs given as Eq. 2 in the
+# manuscript. Internal variable names are kept from the original implementation;
+# the mapping to the manuscript notation is:
+#
+#   code   manuscript   meaning
+#   ----   ----------   -----------------------------------------------
+#   Q2  ->   Q1         antigen presented by specific T-cells      [cells]
+#   Q3  ->   Q2         antigen presented by specific dendritic c. [cells]
+#   Q4  ->   Q3         antigen-specific B-cells, incl. B-memory   [cells]
+#   Q5  ->   Q4         plasmablasts / short-lived plasma cells    [cells]
+#   Q6  ->   Q5         long-lived plasma cells                    [cells]
+#   Q7  ->   Q6         antigen-specific immunoglobulins           [g]
+#   Q13 ->   Q7         free space in the bone-marrow niche        [slots]
+#
+#   k1  -> k1     k10 -> k1A    k2  -> k2     k20 -> k2A
+#   k3  -> k3     kE  -> kB     k4  -> k4     k30 -> k3A
+#   k8  -> k8     k9  -> k9     k40 -> k4A    k5  -> k5
+#   k6  -> k6     k50 -> k5A    k60 -> k6D
+#
+# 
+# =============================================================================
+
+# =============================================================================
+# (1) MODEL DEFINITION  (Eq. 2 of the manuscript)
 # =============================================================================
 def Adaptive_Immune_System_Response(t, z, A, D, T, E, B,
                                     k1, k10, k2, k20, k3, kE, k4, k30,
@@ -14,136 +40,102 @@ def Adaptive_Immune_System_Response(t, z, A, D, T, E, B,
     Q2, Q3, Q4, Q5, Q6, Q7 = z
     Q13 = Q13_M - f13 * Q6
 
-    dQ2 = k1  * A * T - k10 * Q2
-    dQ3 = k2  * A * D - k20 * Q3
-    dQ4 = k3  * E * Q4 + kE * Q2 * B - k4  * Q4 * Q3 - k30 * Q4
-    dQ5 = k4  * Q4 * Q3 - k8  * Q5 - k9  * Q5 * Q13 - k40 * Q5
-    dQ6 = k5  * Q5 * Q13 - k6  * Q6 - k50 * Q6
-    dQ7 = k8  * Q5 + k6  * Q6 - k60 * Q7
+    dQ2 = k1 * A * T - k10 * Q2
+    dQ3 = k2 * A * D - k20 * Q3
+    dQ4 = k3 * E * Q4 + kE * Q2 * B - k4 * Q4 * Q3 - k30 * Q4
+    dQ5 = k4 * Q4 * Q3 - k9 * Q5 * Q13 - k40 * Q5
+    dQ6 = k5 * Q5 * Q13 - k50 * Q6
+    dQ7 = k8 * E * Q5 + k6 * E * Q6 - k60 * Q7
 
     return [dQ2, dQ3, dQ4, dQ5, dQ6, dQ7]
+# Immunoglobulin synthesis (last equation) is a dissipative production process
+# fed by the resource stock E, with Q5 and Q6 acting as control flows that set
+# its rate; the secreting cells are therefore not depleted by it. This is the
+# form given in Eq. 2 of the manuscript.
 
 # =============================================================================
 # (2) RUN TWO-STAGE SIMULATION
+#     Stage 1: priming, antigen present (A = 2e6) for one day, from an empty
+#              state. Stage 2: antigen cleared (A = 0), reported horizon.
 # =============================================================================
 def run_two_stage_simulation(params_dict,
                              perturb_name=None,
                              perturb_frac=0.0,
                              t_eval_stage2=None):
-    k1   = params_dict["k1"]
-    k2   = params_dict["k2"]
-    k3   = params_dict["k3"]
-    k4   = params_dict["k4"]
-    k5   = params_dict["k5"]
-    k6   = params_dict["k6"]
-    k8   = params_dict["k8"]
-    k9   = params_dict["k9"]
-    k10  = params_dict["k10"]
-    k20  = params_dict["k20"]
-    k30  = params_dict["k30"]
-    k40  = params_dict["k40"]
-    k50  = params_dict["k50"]
-    k60  = params_dict["k60"]
-    kE   = params_dict["kE"]
-    f13  = params_dict["f13"]
-    Q13_M = params_dict["Q13_M"]
+    p = dict(params_dict)
 
     if (perturb_name is not None) and (perturb_frac != 0.0):
-        if perturb_name in params_dict:
-            if   perturb_name == "k1":   k1  = params_dict["k1"]  * (1 + perturb_frac)
-            elif perturb_name == "k2":   k2  = params_dict["k2"]  * (1 + perturb_frac)
-            elif perturb_name == "k3":   k3  = params_dict["k3"]  * (1 + perturb_frac)
-            elif perturb_name == "k4":   k4  = params_dict["k4"]  * (1 + perturb_frac)
-            elif perturb_name == "k5":   k5  = params_dict["k5"]  * (1 + perturb_frac)
-            elif perturb_name == "k6":   k6  = params_dict["k6"]  * (1 + perturb_frac)
-            elif perturb_name == "k8":   k8  = params_dict["k8"]  * (1 + perturb_frac)
-            elif perturb_name == "k9":   k9  = params_dict["k9"]  * (1 + perturb_frac)
-            elif perturb_name == "k10":  k10 = params_dict["k10"] * (1 + perturb_frac)
-            elif perturb_name == "k20":  k20 = params_dict["k20"] * (1 + perturb_frac)
-            elif perturb_name == "k30":  k30 = params_dict["k30"] * (1 + perturb_frac)
-            elif perturb_name == "k40":  k40 = params_dict["k40"] * (1 + perturb_frac)
-            elif perturb_name == "k50":  k50 = params_dict["k50"] * (1 + perturb_frac)
-            elif perturb_name == "k60":  k60 = params_dict["k60"] * (1 + perturb_frac)
-            elif perturb_name == "kE":   kE  = params_dict["kE"]  * (1 + perturb_frac)
-            elif perturb_name == "f13":  f13 = params_dict["f13"] * (1 + perturb_frac)
-            elif perturb_name == "Q13_M": Q13_M = params_dict["Q13_M"] * (1 + perturb_frac)
-        else:
+        if perturb_name not in p:
             raise ValueError(f"Unknown parameter '{perturb_name}'")
+        p[perturb_name] = p[perturb_name] * (1 + perturb_frac)
+
+    args_k = (p["k1"], p["k10"], p["k2"], p["k20"], p["k3"], p["kE"], p["k4"],
+              p["k30"], p["k8"], p["k9"], p["k40"], p["k5"], p["k6"],
+              p["k50"], p["k60"], p["f13"], p["Q13_M"])
 
     DT_seed = 1.0
-    t_seed  = np.linspace(0.0, DT_seed, 10)
+    t_seed = np.linspace(0.0, DT_seed, 10)
 
-    A0, D0, T0, B0, E0 = 1e6, 40e6, 8.5e9, 0.4e9, 1.0
-    z0 = [0.0]*6
+    A0, D0, T0, B0, E0 = 2e6, 40e6, 8.5e9, 0.4e9, 1.0
+    z0 = [0.0] * 6
 
     sol_seed = solve_ivp(
         Adaptive_Immune_System_Response,
-        [0.0, DT_seed],
-        z0,
-        t_eval=t_seed,
-        method="Radau",
-        args=(A0, D0, T0, E0, B0,
-              k1, k10, k2, k20, k3, kE, k4, k30,
-              k8, k9, k40, k5, k6, k50, k60,
-              f13, Q13_M)
+        [0.0, DT_seed], z0, t_eval=t_seed,
+        method="Radau", rtol=1e-3, atol=1e-6,
+        args=(A0, D0, T0, E0, B0) + args_k
     )
-
-    Q20t, Q30t, Q40t, Q50t, Q60t, Q70t = sol_seed.y[:, -1]
 
     if t_eval_stage2 is None:
         raise ValueError("Please supply t_eval_stage2 for the longer run!")
 
-    A1, D1, T1, B1, E1 = 0.0, 40e6, 8.5e9, 0.4e9, 1.0
-    z_initial_long = [Q20t, Q30t, Q40t, Q50t, Q60t, Q70t]
-
+    A1 = 0.0  # antigen cleared at the end of the priming interval
     sol_long = solve_ivp(
         Adaptive_Immune_System_Response,
-        [0.0, t_eval_stage2[-1]],
-        z_initial_long,
-        t_eval=t_eval_stage2,
-        method="Radau",
-        args=(A1, D1, T1, E1, B1,
-              k1, k10, k2, k20, k3, kE, k4, k30,
-              k8, k9, k40, k5, k6, k50, k60,
-              f13, Q13_M)
+        [0.0, t_eval_stage2[-1]], sol_seed.y[:, -1], t_eval=t_eval_stage2,
+        method="Radau", rtol=1e-3, atol=1e-6,
+        args=(A1, D0, T0, E0, B0) + args_k
     )
 
     return t_eval_stage2, sol_long.y
 
 # =============================================================================
-# (3) BASELINE PARAMETERS
+# (3) BASELINE PARAMETERS  (Table 1 of the manuscript)
 # =============================================================================
 baseline_params = {
-    "k1":   28e-9,
-    "k2":   6e-6,
-    "k10":  0.7,
-    "k20":  0.9,
-    "k3":   0.019/1.0,
-    "kE":   1e-9,
-    "k4":   2e-9,
-    "k30":  0.4,
-    "k8":   3.4e-9,
-    "k9":   6e-9,
-    "k40":  0.33,
-    "k5":   6e-9,
-    "k6":   1e-9,
-    "k50":  2.7e-5,
-    "k60":  0.07,
-    "f13":  1.0,
-    "Q13_M": 1e9
+    "k1":    28e-9,      # A x T   -> Q1
+    "k2":    6e-6,       # A x D   -> Q2
+    "k10":   0.7,        # apoptosis Q1   (Table 1: k1A = 0.693, rounded here)
+    "k20":   0.9,        # apoptosis Q2   (Table 1: k2A = 0.85,  rounded here)
+    "k3":    0.019,      # proliferation Q3
+    "kE":    1e-9,       # affinity selection
+    "k4":    2e-9,       # Q2 x Q3 -> Q4
+    "k30":   0.4,        # apoptosis Q3
+    "k8":    3.4e-9,     # E x Q4  -> Q6   (Ig secretion, plasmablasts)
+    "k9":    4.8e-9,     # Q4 x Q7 -> homing
+    "k40":   0.33,       # apoptosis Q4
+    "k5":    4.8e-9,     # Q4 x Q7 -> Q5
+    "k6":    3.4e-9,     # E x Q5  -> Q6   (Ig secretion, LLPC)
+    "k50":   2.7e-5,     # apoptosis Q5
+    "k60":   0.07,       # degradation Q6
+    "f13":   1.0,        # one LLPC occupies exactly one niche slot
+    "Q13_M": 1e9         # Q7,MAX
 }
+# NOTE ON TWO COEFFICIENTS: k10 and k20 (manuscript k1A and k2A) are used here as
+# 0.7 and 0.9 day^-1, i.e. the rounded values of the 0.693 and 0.85 reported in
+# Table 1 and derived from the corresponding literature half-lives.
 
-param_names = ["k1","k2","k10","k20","k3","kE","k4","k30",
-               "k8","k9","k40","k5","k6","k50","k60"]
+param_names = ["k1", "k2", "k10", "k20", "k3", "kE", "k4", "k30",
+               "k8", "k9", "k40", "k5", "k6", "k50", "k60"]
 
-delta = 0.25
+delta = 0.25   # +/-25% perturbation, one parameter at a time
 
 # =============================================================================
 # (4) TIME GRIDS
 # =============================================================================
-t10    = np.linspace(0.0,  10.0,  200)
+t10    = np.linspace(0.0, 10.0, 200)
 t365   = np.linspace(0.0, 365.0, 1000)
-t29220 = np.linspace(0.0, 80.0*365.0, 4000)
+t29220 = np.linspace(0.0, 80.0 * 365.0, 4000)
 
 # =============================================================================
 # (5) RUN SENSITIVITY
@@ -153,115 +145,117 @@ results_1y  = {p: {} for p in param_names}
 results_80y = {p: {} for p in param_names}
 
 print("Starting sensitivity runs...")
-
 for pname in param_names:
-    t_b, z_b = run_two_stage_simulation(baseline_params, None, 0.0, t10)
-    results_10d[pname]["baseline"] = (t_b, z_b)
-    t_m, z_m = run_two_stage_simulation(baseline_params, pname, -delta, t10)
-    results_10d[pname]["minus"] = (t_m, z_m)
-    t_p, z_p = run_two_stage_simulation(baseline_params, pname, +delta, t10)
-    results_10d[pname]["plus"] = (t_p, z_p)
-
-    t_b, z_b = run_two_stage_simulation(baseline_params, None, 0.0, t365)
-    results_1y[pname]["baseline"] = (t_b, z_b)
-    t_m, z_m = run_two_stage_simulation(baseline_params, pname, -delta, t365)
-    results_1y[pname]["minus"] = (t_m, z_m)
-    t_p, z_p = run_two_stage_simulation(baseline_params, pname, +delta, t365)
-    results_1y[pname]["plus"] = (t_p, z_p)
-
-    t_b, z_b = run_two_stage_simulation(baseline_params, None, 0.0, t29220)
-    results_80y[pname]["baseline"] = (t_b, z_b)
-    t_m, z_m = run_two_stage_simulation(baseline_params, pname, -delta, t29220)
-    results_80y[pname]["minus"] = (t_m, z_m)
-    t_p, z_p = run_two_stage_simulation(baseline_params, pname, +delta, t29220)
-    results_80y[pname]["plus"] = (t_p, z_p)
-
-    print(f"  → Completed parameter '{pname}'")
-
+    for store, grid in [(results_10d, t10), (results_1y, t365), (results_80y, t29220)]:
+        store[pname]["baseline"] = run_two_stage_simulation(baseline_params, None, 0.0, grid)
+        store[pname]["minus"]    = run_two_stage_simulation(baseline_params, pname, -delta, grid)
+        store[pname]["plus"]     = run_two_stage_simulation(baseline_params, pname, +delta, grid)
+    print(f"  -> Completed parameter '{pname}'")
 print("All sensitivity runs completed.")
 
 # =============================================================================
-# (6) PLOTTING FUNCTION 
+# (6) ATP-EQUIVALENT CONVERSION AND PLOTTING
+#     Stocks are integrated in native units and converted for plotting; the
+#     conversion is linear and stock-specific, so trajectories are invariant.
+#     Left axis: cell stocks Q1-Q5. Right axis: antibody stock Q6, which in
+#     energetic units lies about four orders of magnitude above the cell stocks.
 # =============================================================================
+C_CELL = 5.0e10      # ATPeq per cell           (Conte et al., 2023)
+C_IG   = 2.19e22     # ATPeq per gram of Ig     (4 ATP per peptide bond, 110 g/mol)
+SCALE  = np.array([C_CELL] * 5 + [C_IG])       # rows 0..4 = Q1..Q5 ; row 5 = Q6
+
+
+def _global_limits(results_dict):
+    cell_max, ig_max = 0.0, 0.0
+    for pname in results_dict:
+        for key in ("baseline", "minus", "plus"):
+            z = results_dict[pname][key][1] * SCALE[:, None]
+            cell_max = max(cell_max, np.nanmax(z[:5]))
+            ig_max = max(ig_max, np.nanmax(z[5]))
+    return cell_max * 1.08, ig_max * 1.08
+
+
 def plot_sensitivity_grid(results_dict, t_scale, max_time, xlabel,
-                          figsize=(16, 10), save_name="sensitivity.png"):
+                          figsize=(19, 11), save_name="sensitivity.png"):
     n_params = len(results_dict)
-    ncols    = 5
-    nrows    = int(np.ceil(n_params / ncols))
-    fig, axes = plt.subplots(nrows, ncols, figsize=figsize, sharex=True, sharey=True)
+    ncols = 5
+    nrows = int(np.ceil(n_params / ncols))
+    fig, axes = plt.subplots(nrows, ncols, figsize=figsize, sharex=True)
     axes = axes.flatten()
 
-    Q_colors = {0:"r",1:"orange",2:"green",3:"cyan",4:"purple",5:"b"}
+    Q_colors = {0: "r", 1: "orange", 2: "green", 3: "cyan", 4: "purple", 5: "b"}
+    cell_ylim, ig_ylim = _global_limits(results_dict)
+    div = {"days": 1.0, "months": 30.0, "years": 365.0}[t_scale]
 
     for idx, pname in enumerate(results_dict.keys()):
         ax = axes[idx]
+        ax2 = ax.twinx()
         t_b, z_b = results_dict[pname]["baseline"]
-        t_m, z_m = results_dict[pname]["minus"]
-        t_p, z_p = results_dict[pname]["plus"]
-
-        if t_scale == "days":
-            x_b, x_m, x_p, x_max = t_b, t_m, t_p, max_time
-        elif t_scale == "months":
-            x_b, x_m, x_p = t_b/30.0, t_m/30.0, t_p/30.0
-            x_max = max_time/30.0
-        elif t_scale == "years":
-            x_b, x_m, x_p = t_b/365.0, t_m/365.0, t_p/365.0
-            x_max = max_time/365.0
-        else:
-            raise ValueError
+        _,   z_m = results_dict[pname]["minus"]
+        _,   z_p = results_dict[pname]["plus"]
+        z_b = z_b * SCALE[:, None]
+        z_m = z_m * SCALE[:, None]
+        z_p = z_p * SCALE[:, None]
+        x_b, x_max = t_b / div, max_time / div
 
         for qi in range(6):
-            y_b, y_minus, y_plus = z_b[qi,:], z_m[qi,:], z_p[qi,:]
-            if qi == 5:
-                y_b, y_minus, y_plus = y_b*1e8, y_minus*1e8, y_plus*1e8
-            ax.plot(x_b, y_b, color=Q_colors[qi], linewidth=1.4)
-            ax.fill_between(x_b, y_minus, y_plus, color=Q_colors[qi], alpha=0.2)
+            target = ax if qi < 5 else ax2
+            lo = np.minimum(z_m[qi], z_p[qi])
+            hi = np.maximum(z_m[qi], z_p[qi])
+            target.plot(x_b, z_b[qi], color=Q_colors[qi], linewidth=1.4)
+            target.fill_between(x_b, lo, hi, color=Q_colors[qi], alpha=0.2)
 
-        ax.set_title(f"{pname} ± Δ{pname}", fontsize=12)
+        ax.set_ylim(0, cell_ylim)
+        ax2.set_ylim(0, ig_ylim)
         ax.set_xlim(0, x_max)
-        ax.tick_params(axis='both', which='major', labelsize=12)
-        if (idx % ncols) == 0:
-            ax.set_ylabel("Stock levels (Q₁…Q₆)", fontsize=13)
-        if (idx // ncols) == (nrows - 1):
-            ax.set_xlabel(xlabel, fontsize=13)
+        ax.ticklabel_format(style="sci", axis="y", scilimits=(0, 0), useMathText=True)
+        ax2.ticklabel_format(style="sci", axis="y", scilimits=(0, 0), useMathText=True)
+        ax.yaxis.offsetText.set_fontsize(9)
+        ax2.yaxis.offsetText.set_fontsize(9)
+        ax.set_title(f"{pname} +/- {int(delta*100)}%", fontsize=12)
+        ax.tick_params(axis="both", labelsize=10)
+        ax2.tick_params(axis="y", labelsize=10, colors="b")
+        if idx % ncols == 0:
+            ax.set_ylabel("Q1-Q5 (ATPeq)", fontsize=11)
+        else:
+            ax.tick_params(labelleft=False)
+        if idx % ncols == ncols - 1:
+            ax2.set_ylabel("Q6 - Ig (ATPeq)", fontsize=11, color="b")
+        else:
+            ax2.tick_params(labelright=False)
+        if idx // ncols == nrows - 1:
+            ax.set_xlabel(xlabel, fontsize=12)
 
-    for j in range(n_params, nrows*ncols):
+    for j in range(n_params, nrows * ncols):
         fig.delaxes(axes[j])
 
-    legend_lines, legend_labels = [], []
-    for qi in range(6):
-        legend_lines.append(plt.Line2D([], [], color=Q_colors[qi], lw=1.8))
-        legend_labels.append(f"Q{qi+1}")
-    for qi in range(6):
-        patch = mpatches.Patch(facecolor=Q_colors[qi], alpha=0.2, edgecolor=None)
-        legend_lines.append(patch)
-        legend_labels.append(f"± ΔQ{qi+1}")
+    legend_lines = [plt.Line2D([], [], color=Q_colors[qi], lw=1.8) for qi in range(6)]
+    legend_labels = [f"Q{qi+1}" for qi in range(6)]
+    legend_lines += [mpatches.Patch(facecolor=Q_colors[qi], alpha=0.2) for qi in range(6)]
+    legend_labels += [f"+/- dQ{qi+1}" for qi in range(6)]
 
-    # Reserve space on the RIGHT
-    fig.subplots_adjust(left=0.06, right=0.80, top=0.90, bottom=0.08)
-
-    # Legend placed in reserved right margin (always visible)
-    fig.legend(
-        legend_lines, legend_labels,
-        loc="center left", bbox_to_anchor=(0.82, 0.5),
-        ncol=1, frameon=False,
-        title="Stocks and uncertainty",
-        fontsize=12, title_fontsize=13
-    )
-
-    plt.suptitle("OPT Sensitivity analysis", fontsize=18, y=0.965)
-    fig.savefig(save_name, dpi=300)
-    print(f"Saved sensitivity figure → {save_name}")
+    fig.subplots_adjust(left=0.06, right=0.84, top=0.90, bottom=0.08,
+                        hspace=0.28, wspace=0.35)
+    fig.legend(legend_lines, legend_labels, loc="center left",
+               bbox_to_anchor=(0.85, 0.5), ncol=1, frameon=False,
+               title="Stocks and uncertainty", fontsize=11, title_fontsize=12)
+    plt.suptitle("OPT sensitivity analysis (stocks in ATPeq)", fontsize=18, y=0.965)
+    fig.savefig(save_name, dpi=300, bbox_inches="tight")
+    print(f"Saved sensitivity figure -> {save_name}")
     plt.close(fig)
 
 # =============================================================================
 # (7) PRODUCE FIGURES
 # =============================================================================
 outdir = os.path.expanduser(".")
-if not os.path.isdir(outdir): os.makedirs(outdir)
+if not os.path.isdir(outdir):
+    os.makedirs(outdir)
 
-plot_sensitivity_grid(results_10d, "days", 10, "Days", save_name=os.path.join(outdir, "sens_10day.png"))
-plot_sensitivity_grid(results_1y, "months", 365, "Months", save_name=os.path.join(outdir, "sens_1year.png"))
-plot_sensitivity_grid(results_80y, "years", 80*365, "Years", save_name=os.path.join(outdir, "sens_80year.png"))
+plot_sensitivity_grid(results_10d, "days", 10, "Days",
+                      save_name=os.path.join(outdir, "sens_10day.png"))
+plot_sensitivity_grid(results_1y, "months", 365, "Months",
+                      save_name=os.path.join(outdir, "sens_1year.png"))
+plot_sensitivity_grid(results_80y, "years", 80 * 365, "Years",
+                      save_name=os.path.join(outdir, "sens_80year.png"))
 
-print("Done. Figures saved without legend overlap.")
+print("Done.")
