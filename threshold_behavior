@@ -3,8 +3,36 @@ import matplotlib.pyplot as plt
 from scipy.integrate import solve_ivp
 from scipy.optimize import curve_fit
 
+# =============================================================================
+# Threshold behaviour of the antigen-specific adaptive immune response — Figure 6
+# Surra, Gonella, Conte, Romano
+#
+# This script implements the system of coupled ODEs given as Eq. 2 in the
+# manuscript. Internal variable names are kept from the original implementation;
+# the mapping to the manuscript notation is:
+#
+#   code   manuscript   meaning
+#   ----   ----------   -----------------------------------------------
+#   Q2  ->   Q1         antigen presented by specific T-cells      [cells]
+#   Q3  ->   Q2         antigen presented by specific dendritic c. [cells]
+#   Q4  ->   Q3         antigen-specific B-cells, incl. B-memory   [cells]
+#   Q5  ->   Q4         plasmablasts / short-lived plasma cells    [cells]
+#   Q6  ->   Q5         long-lived plasma cells (LLPC)             [cells]
+#   Q7  ->   Q6         antigen-specific immunoglobulins           [g]
+#   Q13 ->   Q7         free space in the bone-marrow niche        [slots]
+#
+#   k6  -> k1     k9  -> k1A    k7  -> k2     k11 -> k2A
+#   k12 -> k3     k13 -> kB     k14 -> k4     k15 -> k3A
+#   k16 -> k8     k17 -> k9     k18 -> k4A    k19 -> k5
+#   k22 -> k6     k23 -> k5A    k25 -> k6D
+#
+# The quantity analysed here is the stationary value of the LLPC stock, i.e.
+# manuscript Q5, held in code index 4 and normalised to the niche capacity
+# Q7,MAX. Panels A and B of Figure 6 correspond to axes[0] and axes[1] below.
+# =============================================================================
+
 # ---------------------------------------------------------------------
-# MODEL DEFINITION
+# MODEL DEFINITION  (Eq. 2 of the manuscript)
 # ---------------------------------------------------------------------
 def Adaptive_Immune_System_Response(t, z, A, D, T, E, B,
                                     k6, k9, k7, k11,
@@ -18,13 +46,17 @@ def Adaptive_Immune_System_Response(t, z, A, D, T, E, B,
         k6 * A * T - k9 * Q2,
         k7 * A * D - k11 * Q3,
         k12 * E * Q4 + k13 * Q2 * B - k14 * Q4 * Q3 - k15 * Q4,
-        k14 * Q4 * Q3 - k16 * Q5 - k17 * Q5 * Q13 - k18 * Q5,
-        k19 * Q5 * Q13 - k22 * Q6 - k23 * Q6,
-        k16 * Q5 + k22 * Q6 - k25 * Q7
+        k14 * Q4 * Q3 - k17 * Q5 * Q13 - k18 * Q5,
+        k19 * Q5 * Q13 - k23 * Q6,
+        k16 * E * Q5 + k22 * E * Q6 - k25 * Q7
     ]
+# Immunoglobulin synthesis (last equation) is a dissipative production process
+# fed by the resource stock E, with Q5 and Q6 acting as control flows that set
+# its rate; the secreting cells are therefore not depleted by it. This is the
+# form given in Eq. 2 of the manuscript.
 
 # ---------------------------------------------------------------------
-# FIXED PARAMETERS
+# FIXED PARAMETERS  (Table 1 of the manuscript)
 # ---------------------------------------------------------------------
 D, T, B, E = 40e6, 8.5e9, 0.4e9, 1
 k6, k7 = 28e-9, 6e-6
@@ -32,121 +64,124 @@ k9, k11, k12, k13, k14, k15 = 0.7, 0.9, 0.019/E, 1e-9, 2e-9, 0.4
 f13, Q13_M = 1, 1e9
 k16, k17, k18 = 3.4e-9, 4.8/Q13_M, 0.33
 k19, k22, k23, k25 = 4.8/Q13_M, 3.4e-9, 2.7e-5, 0.07
+# NOTE ON TWO COEFFICIENTS: k9 and k11 (manuscript k1A and k2A) are used here as
+# 0.7 and 0.9 day^-1, i.e. the rounded values of the 0.693 and 0.85 reported in
+# Table 1 and derived from the corresponding literature half-lives.
 
 # ---------------------------------------------------------------------
 # SIMULATION SETTINGS
+# Antigen loads spanning 1e5 to 9e7 units, i.e. rather more than three decades.
+# Normalised to A_max = 9e7, this is the range 1.1e-3 to 1 plotted in Figure 6B.
 # ---------------------------------------------------------------------
 A_values = [
     1e5, 2e5, 3e5, 4e5, 5e5, 6e5, 7e5, 8e5, 9e5,
-    1e6, 2e6, 3e6, 4e6, 5e6, 6e6, 7e6, 8e6, 9e6, 
+    1e6, 2e6, 3e6, 4e6, 5e6, 6e6, 7e6, 8e6, 9e6,
     1e7, 2e7, 3e7, 4e7, 5e7, 6e7, 7e7, 8e7, 9e7
-]#    1e4, 2e4, 3e4, 4e4, 5e4, 6e4, 7e4, 8e4, 9e4,
-DT1 = 1    # days for priming
-DT2 = 30   # days for response
+]
+
+DT1 = 1    # days of antigen priming
+DT2 = 30   # days of response, antigen cleared
 
 t1 = np.linspace(0, DT1, 10)
 t2 = np.linspace(0, DT2, 1000)
 
-Q6_traj = []
-Q6_vals = []
+LLPC_traj = []   # trajectories of the LLPC stock (manuscript Q5)
+LLPC_vals = []   # stationary value of the LLPC stock for each antigen load
 
 # ---------------------------------------------------------------------
 # LOOP OVER A_values: 1-day priming THEN 30-day response
 # ---------------------------------------------------------------------
 for A in A_values:
-    # -- 1-day priming simulation --
+    # -- priming: antigen present, from an empty state --
     sol1 = solve_ivp(
         Adaptive_Immune_System_Response,
-        [0, DT1],
-        [0,0,0,0,0,0],
-        t_eval=t1,
-        method='Radau',
+        [0, DT1], [0, 0, 0, 0, 0, 0], t_eval=t1,
+        method='Radau', rtol=1e-3, atol=1e-6,
         args=(A, D, T, E, B,
-              k6, k9, k7, k11,
-              k12, k13, k14, k15,
-              k16, k17, k18,
-              k19, k22, k23, k25,
-              f13, Q13_M)
+              k6, k9, k7, k11, k12, k13, k14, k15,
+              k16, k17, k18, k19, k22, k23, k25, f13, Q13_M)
     )
-    Q20t, Q30t, Q40t, Q50t, Q60t, Q70t = sol1.y[:, -1]
 
-    # -- 30-day response simulation --
+    # -- response: antigen cleared (A = 0) --
     sol2 = solve_ivp(
         Adaptive_Immune_System_Response,
-        [0, DT2],
-        [Q20t, Q30t, Q40t, Q50t, Q60t, Q70t],
-        t_eval=t2,
-        method='Radau',
+        [0, DT2], sol1.y[:, -1], t_eval=t2,
+        method='Radau', rtol=1e-3, atol=1e-6,
         args=(0, D, T, E, B,
-              k6, k9, k7, k11,
-              k12, k13, k14, k15,
-              k16, k17, k18,
-              k19, k22, k23, k25,
-              f13, Q13_M)
+              k6, k9, k7, k11, k12, k13, k14, k15,
+              k16, k17, k18, k19, k22, k23, k25, f13, Q13_M)
     )
-    # store Q6 trajectory and final steady state value
-    Q6_traj.append(sol2.y[4])
-    Q6_vals.append(sol2.y[4, -1])
+
+    LLPC_traj.append(sol2.y[4])        # code index 4 = manuscript Q5
+    LLPC_vals.append(sol2.y[4, -1])
 
 # ---------------------------------------------------------------------
-# LOGISTIC FIT ON STEADY-STATE Q6 VS A
+# LOGISTIC FIT ON THE STATIONARY LLPC STOCK VS ANTIGEN LOAD
 # ---------------------------------------------------------------------
 def logistic(x, a, b, c, d):
     return a / (1 + np.exp(-b * (x - c))) + d
 
-x = np.array(A_values) / np.max(A_values)
-y = np.array(Q6_vals) / Q13_M
+x = np.array(A_values) / np.max(A_values)     # normalised antigen load a
+y = np.array(LLPC_vals) / Q13_M               # normalised LLPC stock q5,ss
 popt, pcov = curve_fit(logistic, x, y, method='trf')
 
-# compute fit and threshold
 y_fit = logistic(x, *popt)
-def sqerr(y_data, y_fit):
-    return np.sum((y_data-y_fit)**(2))
 a, b, c, d = popt
-Ath = c - (1/b) * np.log((1/2 - a - d)/(d - 1/2))
-RMSE = np.sqrt(sqerr(y,y_fit))
-print("Fit results: a=%f, b=%f, c=%f, d=%f, RMSE=%f"%(a,b,c,d,RMSE))
-print("Antigen load threshold: Ath=%f"%(Ath*np.max(A_values)))
+
+residuals = y - y_fit
+SSE  = np.sum(residuals ** 2)
+RMSE = np.sqrt(SSE / len(y))          # root MEAN square error
+
+# threshold: value of a at which the fitted curve reaches half of its range
+Ath = c - (1 / b) * np.log((1/2 - a - d) / (d - 1/2))
+
+print("Fit results: a=%.4f, b=%.4f, c=%.4f, d=%.4f" % (a, b, c, d))
+print("RMSE = %.4f  (%.2f %%)" % (RMSE, RMSE * 100))
+print("root of the summed squared residuals = %.4f  (%.2f %%)" % (np.sqrt(SSE), np.sqrt(SSE) * 100))
+print("Antigen load threshold: a_th = %.4f, i.e. A_th = %.3g antigen units"
+      % (Ath, Ath * np.max(A_values)))
 
 # ---------------------------------------------------------------------
 # SIGMOID CURVE LAW
 # ---------------------------------------------------------------------
-xx = np.logspace(-3,0,100)
+xx = np.logspace(-3, 0, 100)
 y_xx = logistic(xx, *popt)
 
 # ---------------------------------------------------------------------
 # PLOTTING
 # ---------------------------------------------------------------------
-fig, axes = plt.subplots(ncols=2, figsize=(12,6), dpi=400)
+fig, axes = plt.subplots(ncols=2, figsize=(12, 6), dpi=400)
 
-# trajectories panel (q6 = Q6/Qmax)
-for traj in Q6_traj:
-    axes[0].plot(t2, traj/Q13_M, color='purple', alpha=0.5)
-    axes[0].plot(t2[-1], traj[-1]/Q13_M, marker="o", ls=" ", color="k")
-axes[0].set_ylabel(r'$q_{5}(t)$', size=15) #Normalized Q6 (long-lived plasma cells)
+# (A) trajectories of the normalised LLPC stock
+for traj in LLPC_traj:
+    axes[0].plot(t2, traj / Q13_M, color='purple', alpha=0.5)
+    axes[0].plot(t2[-1], traj[-1] / Q13_M, marker="o", ls=" ", color="k")
+axes[0].set_ylabel(r'$q_{5}(t)$', size=15)
 axes[0].set_xlabel(r'$time$ $from$ $first$ $exposure$', size=15)
 axes[0].set_yticks([0, 0.25, 0.5, 0.75, 1])
 axes[0].set_xticks([])
 axes[0].axhline(0.5, linestyle='--', color='k', alpha=0.5)
-axes[0].tick_params(labelsize=15)     #https://matplotlib.org/stable/api/_as_gen/matplotlib.axes.Axes.tick_params.html#matplotlib.axes.Axes.tick_params
-axes[0].grid(ls=":")#,alpha=0.8
+axes[0].tick_params(labelsize=15)
+axes[0].grid(ls=":")
 
-# steady-state vs A panel (a = QA/QAmax)
+# (B) stationary values vs normalised antigen load
 axes[1].plot(x, y, 'o', color='k', label=r'$q_{5,ss}$')
-#axes[1].plot(x, y_fit, '-', color='grey', alpha=0.7, label='logistic fit')
 axes[1].plot(xx, y_xx, '-', color='grey', alpha=0.7, label=r'$q_{5,ss}(a)$')
-axes[1].axvline(Ath, color='red',label=r"$a_{th}$") #, label=f'A_th={Ath:.3f} * A_max'
+axes[1].axvline(Ath, color='red', label=r"$a_{th}$")
 axes[1].set_xscale('log')
 axes[1].set_xlabel(r'$a$ $(antigen$ $load)$', size=15)
 axes[1].set_yticks([0, 0.25, 0.5, 0.75, 1])
 axes[1].axhline(0.5, linestyle='--', color='k', alpha=0.5)
 axes[1].legend(fontsize=15)
-axes[1].tick_params(labelsize=15)     #https://matplotlib.org/stable/api/_as_gen/matplotlib.axes.Axes.tick_params.html#matplotlib.axes.Axes.tick_params
-axes[1].grid(ls=":")#,alpha=0.8
+axes[1].tick_params(labelsize=15)
+axes[1].grid(ls=":")
 
 # --- panels ---
-axes[0].text(-8, 1,r"$A.$", size = 20, fontweight="heavy")
-axes[1].text(0.00015, 1,r"$B.$", size = 20, fontweight="heavy")
+axes[0].text(-8, 1, r"$A.$", size=20, fontweight="heavy")
+axes[1].text(0.00015, 1, r"$B.$", size=20, fontweight="heavy")
 
+plt.tight_layout()
+plt.savefig("Figure6_threshold.png", dpi=400, bbox_inches="tight")
+plt.show()
 plt.tight_layout()
 plt.show()
